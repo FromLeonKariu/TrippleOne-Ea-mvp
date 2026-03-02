@@ -147,11 +147,6 @@ double BodyLow(int index) {
                    iClose(_Symbol, _Period, index));
 }
 
-struct swingPoints {
-   double   price;
-   int      index;
-   datetime    time;
-};
 
 struct SwingPoint {
     double   price;
