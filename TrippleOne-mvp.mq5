@@ -64,7 +64,9 @@ PriceData tempBullishOB;         // highest bullish candle → supply OB
 bool isRallyActive     = false;
 bool bearishZoneLocked = false;
 int  barsSinceBullOB   = 0;
+// track initial candle
 
+bool initialCandleIndex = true;
 // --- Shadow locals for capped inputs ---
 int EffectiveExpansionLookback;
 int EffectiveFVGLookback;
@@ -75,7 +77,7 @@ input int    MaxStoredSwings    = 50;   // Max zones stored per side
 input int    ExpansionLookback  = 5;    // Bars to scan for expansion after OB
 input int    FVG_Lookback       = 5;    // Bars to scan for FVG after OB
 input bool   TrendFilterEnabled = true; // Gate zones by trend direction
-
+input int    PrevCandleIndex    = 1;    // Index of the previous candle to use for BOS pivot (1 or 2)
 //+------------------------------------------------------------------+
 int OnInit()
 {
@@ -105,7 +107,8 @@ int OnInit()
    ArrayResize(confirmedBullishZones, 0);
    ArrayResize(confirmedBearishZones, 0);
 
-   currentTrend  = TREND_RANGING;
+   // NEW: Run the historical scan
+   SeedInitialTrend(200);
    lastSwingHigh = 0;
    lastSwingLow  = 0;
    prevSwingHigh = 0;
@@ -114,12 +117,19 @@ int OnInit()
    return(INIT_SUCCEEDED);
 }
 
+
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
    ObjectsDeleteAll(0, "OB_Demand_");
    ObjectsDeleteAll(0, "OB_Supply_");
    ObjectsDeleteAll(0, "Panel_");
+   ObjectsDeleteAll(0, "Current_High");
+   ObjectsDeleteAll(0, "Current_Low");
+   ObjectsDeleteAll(0, "HH_H1_Current");
+   ObjectsDeleteAll(0, "HH_H2_Previous");
+   ObjectsDeleteAll(0, "LL_L1_Current");
+   ObjectsDeleteAll(0, "LL_L2_Previous");
    Comment("");
 }
 
@@ -131,7 +141,6 @@ void OnTick()
    InvalidateAndExtend();
 
    if(!isNewBar()) return;
-
    ProcessBullishStructure();
    ProcessBearishStructure();
    UpdateTrendState();   // runs after both sides so swing levels are fresh
@@ -143,8 +152,10 @@ void OnTick()
 //+------------------------------------------------------------------+
 void ProcessBullishStructure()
 {
+   Print("Processing Bullish Structure...");
    if(isPullbackActive)
-      barsSinceBearOB++;
+   barsSinceBearOB++;
+   Print("is pullback active: ", isPullbackActive, "| BULLISHZL :", bullishZoneLocked, "| BarSinceOB : ", barsSinceBearOB);
 
    double open1  = iOpen (_Symbol, _Period, 1);
    double close1 = iClose(_Symbol, _Period, 1);
@@ -154,21 +165,24 @@ void ProcessBullishStructure()
    // STEP 1: Track bearish OB candidate (lowest bear candle)
    if(!bullishZoneLocked && close1 < open1)
    {
+            Print("STEP 1");
+
       if(!isPullbackActive || low1 < tempBearishOB.low)
       {
          tempBearishOB.high  = high1;
          tempBearishOB.low   = low1;
          tempBearishOB.close = close1;
          tempBearishOB.time  = iTime(_Symbol, _Period, 1);
-
+         
          isPullbackActive = true;
          barsSinceBearOB  = 0;
       }
    }
-
+   
    // STEP 2: Bullish expansion + FVG → lock demand zone
    if(isPullbackActive && !bullishZoneLocked && barsSinceBearOB >= 2)
    {
+      Print("STEP 2");
       if(IsBullishExpansionAfterOB(EffectiveExpansionLookback, tempBearishOB.time) &&
          HasBullishFVGAfterOB(EffectiveFVGLookback, tempBearishOB.time))
       {
@@ -181,21 +195,54 @@ void ProcessBullishStructure()
 
    // STEP 3: Bullish BOS → promote demand zone
    // Bar 2 pivot — all bars fully closed
-   double highClosed = iHigh(_Symbol, _Period, 2);
+   double highClosed = iHigh(_Symbol, _Period, PrevCandleIndex);
    double buffer     = BOS_Buffer_Points * _Point;
 
-   // Seed first swing high level on first valid bar
+   // Seed first swing high level on first valid bar and returns until next candle
    if(lastSwingHigh == 0)
    {
       lastSwingHigh = highClosed;
       return;
    }
 
-   if(IsSwingHigh() && highClosed > lastSwingHigh + buffer)
+   //checks if it forms a higher high
+   bool isHigherHigh = IsSwingHigh() && highClosed > lastSwingHigh + buffer;
+   if(isHigherHigh)
    {
       // Update trend tracking BEFORE storing new swing
       prevSwingHigh = lastSwingHigh;
       lastSwingHigh = highClosed;
+
+      if(initialCandleIndex) 
+      {
+         ObjectsDeleteAll(0, "HH_H1_Current");
+         ObjectsDeleteAll(0, "HH_H2_Previous");
+         initialCandleIndex = false;
+      }
+
+      ObjectsDeleteAll(0, "Current_High");      
+      DrawStructureLine("Current_High", lastSwingHigh, clrSkyBlue);
+      Print("STEP 3");
+      
+      /*
+      if(isHigherHigh) 
+      {
+         Time →→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→→
+         visual
+                  prevSwingHigh    lastSwingHigh    highClosed
+                     /\               /\               /\
+                     /  \             /  \             /  \
+                     /    \           /    \           /    \
+                  /      \         /      \         /      
+                  /        \       /        \       /       
+                  /          \     /          \     /        
+               /            \   /            \   /         
+               /              \ /              \ /          
+
+               oldest          middle          newest
+      }
+      */
+
 
       // Gate by trend — demand only in uptrend or ranging
       bool trendAllows = !TrendFilterEnabled ||
@@ -203,12 +250,18 @@ void ProcessBullishStructure()
 
       if(bullishZoneLocked && tempBearishOB.low > 0 && trendAllows)
       {
+         Print("STEP 3.2");
          // Improvement from v8: wick expansion — extend zone low
          // to include wick of bar immediately before OB if it printed lower
+         //obIndex = obIdx
          int obIdx = iBarShift(_Symbol, _Period, tempBearishOB.time);
-         if(obIdx > 0 && iLow(_Symbol, _Period, obIdx + 1) < tempBearishOB.low)
-            tempBearishOB.low = iLow(_Symbol, _Period, obIdx + 1);
+      
 
+         //BUG -- this line below doesnt work the way i intended - it shouldn't work for a one candle zone(one candle zones shouldn't be promoted to demand zone atleast for the moment)
+
+          if(obIdx > 0 && iLow(_Symbol, _Period, obIdx + 1) < tempBearishOB.low)
+             tempBearishOB.low = iLow(_Symbol, _Period, obIdx + 1);
+      
          AddZone(confirmedBullishZones, tempBearishOB);
          DrawZone(tempBearishOB, "OB_Demand_", clrDodgerBlue);
          Print("Bullish BOS → Demand Zone saved at: ", tempBearishOB.low,
@@ -228,9 +281,11 @@ void ProcessBullishStructure()
 //+------------------------------------------------------------------+
 void ProcessBearishStructure()
 {
+   Print("Processing Bearish Structure...");
    if(isRallyActive)
-      barsSinceBullOB++;
+   barsSinceBullOB++;
 
+   Print("is rally active: ", isRallyActive, "| BEARISHZL :", bearishZoneLocked, "BarSinceOB : ", barsSinceBullOB);
    double open1  = iOpen (_Symbol, _Period, 1);
    double close1 = iClose(_Symbol, _Period, 1);
    double high1  = iHigh (_Symbol, _Period, 1);
@@ -254,6 +309,7 @@ void ProcessBearishStructure()
    // STEP 2: Bearish expansion + FVG → lock supply zone
    if(isRallyActive && !bearishZoneLocked && barsSinceBullOB >= 2)
    {
+      Print("STEP 1");
       if(IsBearishExpansionAfterOB(EffectiveExpansionLookback, tempBullishOB.time) &&
          HasBearishFVGAfterOB(EffectiveFVGLookback, tempBullishOB.time))
       {
@@ -278,9 +334,20 @@ void ProcessBearishStructure()
 
    if(IsSwingLow() && lowClosed < lastSwingLow - buffer)
    {
+      Print("Step 2");
       // Update trend tracking BEFORE storing new swing
       prevSwingLow = lastSwingLow;
       lastSwingLow = lowClosed;
+
+      if(initialCandleIndex)
+      {
+         ObjectsDeleteAll(0, "LL_L1_Current");
+         ObjectsDeleteAll(0, "LL_L2_Previous");
+         initialCandleIndex = false;
+      }
+
+      ObjectsDeleteAll(0, "Current_Low");
+      DrawStructureLine("Current_Low", lastSwingLow, clrPink);
 
       // Gate by trend — supply only in downtrend or ranging
       bool trendAllows = !TrendFilterEnabled ||
@@ -308,6 +375,69 @@ void ProcessBearishStructure()
    }
 }
 
+
+//+------------------------------------------------------------------+
+//| Historical Trend Seed: Scans 200 bars to set initial trend state |
+//+------------------------------------------------------------------+
+void SeedInitialTrend(int lookback = 200)
+{
+   Print("Scanning history for initial trend context...");
+   
+   // Temporary variables to find the most recent pivots in history
+   double h1=0, h2=0, l1=0, l2=0;
+   int foundHighs=0, foundLows=0;
+
+   // Loop backwards from bar 3 (to ensure shoulders are closed)
+   for(int i = 3; i < lookback && (foundHighs < 2 || foundLows < 2); i++)
+   {
+      // Check for Swing High pivot at index 'i'
+      if(iHigh(_Symbol, _Period, i) > iHigh(_Symbol, _Period, i-1) && 
+         iHigh(_Symbol, _Period, i) > iHigh(_Symbol, _Period, i+1))
+      {
+         if(foundHighs == 0) { h1 = iHigh(_Symbol, _Period, i); foundHighs++; }
+         else if(foundHighs == 1 && iHigh(_Symbol, _Period, i) != h1) { h2 = iHigh(_Symbol, _Period, i); foundHighs++; }
+      }
+
+      // Check for Swing Low pivot at index 'i'
+      if(iLow(_Symbol, _Period, i) < iLow(_Symbol, _Period, i-1) && 
+         iLow(_Symbol, _Period, i) < iLow(_Symbol, _Period, i+1))
+      {
+         if(foundLows == 0) { l1 = iLow(_Symbol, _Period, i); foundLows++; }
+         else if(foundLows == 1 && iLow(_Symbol, _Period, i) != l1) { l2 = iLow(_Symbol, _Period, i); foundLows++; }
+      }
+   }
+
+   // Assign to globals (h1/l1 are the most recent, h2/l2 are the previous)
+   lastSwingHigh = h1;
+   prevSwingHigh = h2;
+   lastSwingLow  = l1;
+   prevSwingLow  = l2;
+
+// Draw the lines for visual confirmation
+   DrawStructureLine("HH_H1_Current", h1, clrSkyBlue);
+   DrawStructureLine("HH_H2_Previous", h2, clrRoyalBlue);
+   DrawStructureLine("LL_L1_Current", l1, clrPink);
+   DrawStructureLine("LL_L2_Previous", l2, clrCrimson);
+
+   // Apply v9 HH/HL logic immediately
+   if(lastSwingHigh > prevSwingHigh && lastSwingLow > prevSwingLow){
+
+      currentTrend = TREND_UP;
+   Print("TREND : ", currentTrend, TrendLabel());
+   }
+   else if(lastSwingLow < prevSwingLow && lastSwingHigh < prevSwingHigh)
+{      currentTrend = TREND_DOWN;
+
+   Print("TREND : ", currentTrend, TrendLabel());
+}
+   else
+      currentTrend = TREND_RANGING;
+
+   Print("Initial Trend Set: ", TrendLabel(), " (H1:", h1, " H2:", h2, " L1:", l1, " L2:", l2, ")");
+}
+
+
+
 //+------------------------------------------------------------------+
 //| TREND STATE — HH/HL = uptrend, LL/LH = downtrend               |
 //| v7 logic restored — more robust than raw price vs level check   |
@@ -325,6 +455,14 @@ void UpdateTrendState()
    bool higherLow  = lastSwingLow  > prevSwingLow;
    bool lowerLow   = lastSwingLow  < prevSwingLow;
    bool lowerHigh  = lastSwingHigh < prevSwingHigh;
+   
+   
+   // Draw the lines for visual confirmation
+   DrawStructureLine("HH_H1_Current", lastSwingHigh, clrSkyBlue);
+   DrawStructureLine("HH_H2_Previous", prevSwingHigh, clrRoyalBlue);
+   DrawStructureLine("LL_L1_Current", lastSwingLow, clrPink);
+   DrawStructureLine("LL_L2_Previous", prevSwingLow, clrCrimson);
+   
 
    TREND_STATE prev = currentTrend;
 
@@ -432,41 +570,47 @@ bool IsBearishExpansionAfterOB(int lookback, datetime obTime)
 //+------------------------------------------------------------------+
 bool HasBullishFVGAfterOB(int lookback, datetime obTime)
 {
-   if(iBars(_Symbol, _Period) < lookback + 3) return false;
-
+   int totalBars = iBars(_Symbol, _Period);
    int obIdx = iBarShift(_Symbol, _Period, obTime);
-   if(obIdx < 0) return false;
-
-   // i = right bar of FVG (newest), i+2 = left bar (oldest of the 3)
+   
+   // If OB is not found or it's too close to the end of history to form a 3-bar FVG
+   if(obIdx < 0 || obIdx + 2 >= totalBars) return false;
+   Print("Checking for Bullish FVG ");
    // scan from bar just after OB toward present
    for(int i = obIdx - 1; i >= 1 && i >= obIdx - lookback; i--)
    {
+      // Safety: Ensure we don't look past the oldest bar in history
+      if(i + 2 >= totalBars) break; 
+
       double highLeft  = iHigh(_Symbol, _Period, i + 2); // older
       double lowRight  = iLow (_Symbol, _Period, i);     // newer
 
-      if(highLeft < lowRight)
-         return true;
+      if(highLeft < lowRight) return true;
    }
    return false;
 }
-
 //+------------------------------------------------------------------+
 //| BEARISH FVG — low[left] > high[right], after OB                 |
 //+------------------------------------------------------------------+
+
+
 bool HasBearishFVGAfterOB(int lookback, datetime obTime)
 {
-   if(iBars(_Symbol, _Period) < lookback + 3) return false;
-
+   int totalBars = iBars(_Symbol, _Period);
    int obIdx = iBarShift(_Symbol, _Period, obTime);
-   if(obIdx < 0) return false;
+      Print("Checking for Bearish FVG ");
+
+   if(obIdx < 0 || obIdx + 2 >= totalBars) return false;
 
    for(int i = obIdx - 1; i >= 1 && i >= obIdx - lookback; i--)
    {
+      // Safety: Ensure we don't look past the oldest bar in history
+      if(i + 2 >= totalBars) break;
+
       double lowLeft   = iLow (_Symbol, _Period, i + 2); // older
       double highRight = iHigh(_Symbol, _Period, i);     // newer
 
-      if(lowLeft > highRight)
-         return true;
+      if(lowLeft > highRight) return true;
    }
    return false;
 }
@@ -476,19 +620,50 @@ bool HasBearishFVGAfterOB(int lookback, datetime obTime)
 //+------------------------------------------------------------------+
 bool IsSwingHigh()
 {
-   return (iHigh(_Symbol, _Period, 2) > iHigh(_Symbol, _Period, 1) &&
-           iHigh(_Symbol, _Period, 2) > iHigh(_Symbol, _Period, 3));
-}
+   double pivot = iHigh(_Symbol, _Period, 1);
 
+   // 3 consecutive bearish closes to the left
+   bool leftSide = iClose(_Symbol, _Period, 2) < iClose(_Symbol, _Period, 3) &&
+                   iClose(_Symbol, _Period, 3) < iClose(_Symbol, _Period, 4) &&
+                   iClose(_Symbol, _Period, 4) < iClose(_Symbol, _Period, 5);
+
+   // direction changed to the right
+   bool rightSide = pivot > iHigh(_Symbol, _Period, 2);
+   bool isNewHigh = iClose(_Symbol, _Period, 1) > lastSwingHigh;
+   if((leftSide && rightSide) || isNewHigh)
+   {
+      double newSwingHigh = iClose(_Symbol, _Period, 1);
+      Print("Potential Swing High at ", pivot, " (", TimeToString(iTime(_Symbol, _Period, 1)), ")",
+      " | Last Swing High: ", lastSwingHigh, " | New Swing High: ", newSwingHigh);
+      lastSwingHigh = newSwingHigh; // Update lastSwingHigh immediately to allow consecutive HHs to trigger
+      return true;
+   }
+return false;
+}
 //+------------------------------------------------------------------+
 //| SWING LOW — bar 2 pivot, bars 1 & 3 fully closed shoulders      |
 //+------------------------------------------------------------------+
 bool IsSwingLow()
 {
-   return (iLow(_Symbol, _Period, 2) < iLow(_Symbol, _Period, 1) &&
-           iLow(_Symbol, _Period, 2) < iLow(_Symbol, _Period, 3));
-}
+   double pivot = iLow(_Symbol, _Period, 1);
 
+   // 3 consecutive bullish closes to the left
+   bool leftSide = iClose(_Symbol, _Period, 2) > iClose(_Symbol, _Period, 3) &&
+                   iClose(_Symbol, _Period, 3) > iClose(_Symbol, _Period, 4) &&
+                   iClose(_Symbol, _Period, 4) > iClose(_Symbol, _Period, 5);
+
+   // direction changed to the right
+   bool rightSide = pivot < iLow(_Symbol, _Period, 2);
+   bool isNewLow  = iClose(_Symbol, _Period, 1) < lastSwingLow;
+   if((leftSide && rightSide) || isNewLow){
+      double newSwingLow = iClose(_Symbol, _Period, 1);
+      Print("Potential Swing Low at ", pivot, " (", TimeToString(iTime(_Symbol, _Period, 1)), ")",
+      " | Last Swing Low: ", lastSwingLow, " | New Swing Low: ", newSwingLow);
+      lastSwingLow = newSwingLow; // Update lastSwingLow immediately to allow consecutive LLs to trigger
+      return true;
+   }
+   return leftSide && rightSide;
+}
 //+------------------------------------------------------------------+
 //| AddZone — bounds-checked insert (improvement from v8)           |
 //+------------------------------------------------------------------+
@@ -533,6 +708,19 @@ void DrawZone(PriceData &data, string prefix, color zoneColor)
    ObjectSetInteger(0, name, OBJPROP_BACK,       true);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
 }
+
+
+void DrawStructureLine(string name, double price, color clr, int style = STYLE_DOT)
+{
+   ObjectDelete(0, name);
+   ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetString(0, name, OBJPROP_TEXT, name); // Label the line
+}
+
 
 //+------------------------------------------------------------------+
 //| Reset functions — ZeroMemory (improvement from v8)              |
@@ -585,6 +773,7 @@ bool isNewBar()
 //| DebugInfo — Comment() panel                                     |
 //| Does NOT call isNewBar() (v8 regression avoided)               |
 //+------------------------------------------------------------------+
+
 void DebugInfo()
 {
    string trendLine;
@@ -595,15 +784,21 @@ void DebugInfo()
       default:         trendLine = "↔ RANGING";   break;
    }
 
+   // --- Resolve swing high/low bar indices ---
+// int prevSwingHighIdx = (prevSwingHighTime > 0) ? iBarShift(_Symbol, _Period, prevSwingHighTime) : -1;
+// int lastSwingHighIdx = (lastSwingHighTime > 0) ? iBarShift(_Symbol, _Period, lastSwingHighTime) : -1;
+// int prevSwingLowIdx  = (prevSwingLowTime  > 0) ? iBarShift(_Symbol, _Period, prevSwingLowTime)  : -1;
+// int lastSwingLowIdx  = (lastSwingLowTime  > 0) ? iBarShift(_Symbol, _Period, lastSwingLowTime)  : -1;
+
    string output =
-      "=== MARKET STRUCTURE v9 ===\n"                                             +
+      "=== MARKET STRUCTURE v9.05 ===\n"                                          +
       "Time             : " + TimeToString(TimeCurrent(), TIME_SECONDS)           + "\n" +
       "Trend            : " + trendLine                                           + "\n" +
       "Filter Active    : " + (TrendFilterEnabled ? "YES" : "NO")                + "\n" +
-      "Prev Swing High  : " + DoubleToString(prevSwingHigh, _Digits)             + "\n" +
-      "Last Swing High  : " + DoubleToString(lastSwingHigh, _Digits)             + "\n" +
-      "Prev Swing Low   : " + DoubleToString(prevSwingLow,  _Digits)             + "\n" +
-      "Last Swing Low   : " + DoubleToString(lastSwingLow,  _Digits)             + "\n" +
+      "Prev Swing High  : " + DoubleToString(prevSwingHigh, _Digits)  + "\n" +
+      "Last Swing High  : " + DoubleToString(lastSwingHigh, _Digits) + "\n" +
+      "Prev Swing Low   : " + DoubleToString(prevSwingLow,  _Digits) +"\n" +
+      "Last Swing Low   : " + DoubleToString(lastSwingLow,  _Digits) + "\n" +
       "---\n"                                                                      +
       "BULLISH (Demand)\n"                                                         +
       " Pullback Active : " + (isPullbackActive  ? "YES" : "NO")                 + "\n" +
@@ -621,4 +816,7 @@ void DebugInfo()
 
    Comment(output);
 }
+
+
+
 //+------------------------------------------------------------------+
