@@ -130,7 +130,7 @@ void OnDeinit(const int reason)
    ObjectsDeleteAll(0, "HH_H2_Previous");
    ObjectsDeleteAll(0, "LL_L1_Current");
    ObjectsDeleteAll(0, "LL_L2_Previous");
-   Comment("");
+   ObjectDelete(0, "DebugLabel");
 }
 
 //+------------------------------------------------------------------+
@@ -784,39 +784,45 @@ void DebugInfo()
       default:         trendLine = "↔ RANGING";   break;
    }
 
-   // --- Resolve swing high/low bar indices ---
-// int prevSwingHighIdx = (prevSwingHighTime > 0) ? iBarShift(_Symbol, _Period, prevSwingHighTime) : -1;
-// int lastSwingHighIdx = (lastSwingHighTime > 0) ? iBarShift(_Symbol, _Period, lastSwingHighTime) : -1;
-// int prevSwingLowIdx  = (prevSwingLowTime  > 0) ? iBarShift(_Symbol, _Period, prevSwingLowTime)  : -1;
-// int lastSwingLowIdx  = (lastSwingLowTime  > 0) ? iBarShift(_Symbol, _Period, lastSwingLowTime)  : -1;
-
+   // Construct the same string, but using \n for new lines
    string output =
-      "=== MARKET STRUCTURE v9.05 ===\n"                                          +
-      "Time             : " + TimeToString(TimeCurrent(), TIME_SECONDS)           + "\n" +
-      "Trend            : " + trendLine                                           + "\n" +
-      "Filter Active    : " + (TrendFilterEnabled ? "YES" : "NO")                + "\n" +
-      "Prev Swing High  : " + DoubleToString(prevSwingHigh, _Digits)  + "\n" +
-      "Last Swing High  : " + DoubleToString(lastSwingHigh, _Digits) + "\n" +
-      "Prev Swing Low   : " + DoubleToString(prevSwingLow,  _Digits) +"\n" +
-      "Last Swing Low   : " + DoubleToString(lastSwingLow,  _Digits) + "\n" +
-      "---\n"                                                                      +
-      "BULLISH (Demand)\n"                                                         +
-      " Pullback Active : " + (isPullbackActive  ? "YES" : "NO")                 + "\n" +
-      " Zone Locked     : " + (bullishZoneLocked ? "YES" : "NO")                 + "\n" +
-      " Bars Since OB   : " + IntegerToString(barsSinceBearOB)                   + "\n" +
-      " OB Low          : " + DoubleToString(tempBearishOB.low,  _Digits)        + "\n" +
-      " Active Zones    : " + IntegerToString(ArraySize(confirmedBullishZones))  + "\n" +
-      "---\n"                                                                      +
-      "BEARISH (Supply)\n"                                                         +
-      " Rally Active    : " + (isRallyActive     ? "YES" : "NO")                 + "\n" +
-      " Zone Locked     : " + (bearishZoneLocked ? "YES" : "NO")                 + "\n" +
-      " Bars Since OB   : " + IntegerToString(barsSinceBullOB)                   + "\n" +
-      " OB High         : " + DoubleToString(tempBullishOB.high, _Digits)        + "\n" +
-      " Active Zones    : " + IntegerToString(ArraySize(confirmedBearishZones));
+      "=== MARKET STRUCTURE v9.05 ===\n" +
+      "Time : " + TimeToString(TimeCurrent(), TIME_SECONDS) + "\n" +
+      "Trend : " + trendLine + "\n" +
+      "Filter Active : " + (TrendFilterEnabled ? "YES" : "NO") + "\n" +
+      "Prev Swing High : " + DoubleToString(prevSwingHigh, _Digits) + "\n" +
+      "Last Swing High : " + DoubleToString(lastSwingHigh, _Digits) + "\n" +
+      "Prev Swing Low : " + DoubleToString(prevSwingLow,  _Digits) + "\n" +
+      "Last Swing Low : " + DoubleToString(lastSwingLow,  _Digits) + "\n" +
+      "------------------------------\n" +
+      "BULLISH (Demand)\n" +
+      " Pullback Active : " + (isPullbackActive  ? "YES" : "NO") + "\n" +
+      " Zone Locked : " + (bullishZoneLocked ? "YES" : "NO") + "\n" +
+      " Bars Since OB : " + IntegerToString(barsSinceBearOB) + "\n" +
+      " OB Low : " + DoubleToString(tempBearishOB.low,  _Digits) + "\n" +
+      " Active Zones : " + IntegerToString(ArraySize(confirmedBullishZones)) + "\n" +
+      "------------------------------\n" +
+      "BEARISH (Supply)\n" +
+      " Rally Active : " + (isRallyActive ? "YES" : "NO") + "\n" +
+      " Zone Locked : " + (bearishZoneLocked ? "YES" : "NO") + "\n" +
+      " Bars Since OB : " + IntegerToString(barsSinceBullOB) + "\n" +
+      " OB High : " + DoubleToString(tempBullishOB.high, _Digits) + "\n" +
+      " Active Zones : " + IntegerToString(ArraySize(confirmedBearishZones));
 
-   Comment(output);
+   // --- Create or Update the Screen Label ---
+   string objName = "DebugLabel";
+   
+   if(ObjectFind(0, objName) < 0)
+   {
+      ObjectCreate(0, objName, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, objName, OBJPROP_CORNER, CORNER_RIGHT_UPPER); // Top Right
+      ObjectSetInteger(0, objName, OBJPROP_ANCHOR, ANCHOR_RIGHT_UPPER); // Anchor point
+      ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, 20);            // 20 pixels from right
+      ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, 20);            // 20 pixels from top
+      ObjectSetString(0, objName, OBJPROP_FONT, "Courier New");       // Monospaced font for alignment
+      ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, 10);
+      ObjectSetInteger(0, objName, OBJPROP_COLOR, clrWhite);
+   }
+
+   ObjectSetString(0, objName, OBJPROP_TEXT, output);
 }
-
-
-
-//+------------------------------------------------------------------+
