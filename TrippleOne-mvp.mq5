@@ -24,6 +24,8 @@
 #property version   "9.00"
 #property strict
 
+
+const ulong MAGIC_EAID  = 54546648863218348; // Unique identifier for orders placed by this EA
 //==================== ENUMS ====================
 enum TREND_STATE
 {
@@ -31,6 +33,7 @@ enum TREND_STATE
    TREND_DOWN    = -1,  // Lower lows   + lower highs
    TREND_RANGING =  0   // No clear sequence
 };
+
 
 //==================== STRUCTS ====================
 struct PriceData {
@@ -130,7 +133,7 @@ void OnDeinit(const int reason)
    ObjectsDeleteAll(0, "HH_H2_Previous");
    ObjectsDeleteAll(0, "LL_L1_Current");
    ObjectsDeleteAll(0, "LL_L2_Previous");
-   ObjectDelete(0, "DebugLabel");
+   Comment("");
 }
 
 //+------------------------------------------------------------------+
@@ -217,11 +220,15 @@ void ProcessBullishStructure()
       {
          ObjectsDeleteAll(0, "HH_H1_Current");
          ObjectsDeleteAll(0, "HH_H2_Previous");
+         ObjectsDeleteAll(0, "LL_L1_Current");
+         ObjectsDeleteAll(0, "LL_L2_Previous");
          initialCandleIndex = false;
       }
 
       ObjectsDeleteAll(0, "Current_High");      
       DrawStructureLine("Current_High", lastSwingHigh, clrSkyBlue);
+      ObjectsDeleteAll(0, "Current_Low");
+      DrawStructureLine("Current_Low", lastSwingLow, clrPink);
       Print("STEP 3");
       
       /*
@@ -375,67 +382,97 @@ void ProcessBearishStructure()
    }
 }
 
-
 //+------------------------------------------------------------------+
 //| Historical Trend Seed: Scans 200 bars to set initial trend state |
 //+------------------------------------------------------------------+
+
+
 void SeedInitialTrend(int lookback = 200)
 {
    Print("Scanning history for initial trend context...");
-   
-   // Temporary variables to find the most recent pivots in history
+
    double h1=0, h2=0, l1=0, l2=0;
    int foundHighs=0, foundLows=0;
 
-   // Loop backwards from bar 3 (to ensure shoulders are closed)
-   for(int i = 3; i < lookback && (foundHighs < 2 || foundLows < 2); i++)
+   // Start at 5 to ensure enough bars exist for the 3-close left check (i+1 to i+4)
+   for(int i = 5; i < lookback - 1 && (foundHighs < 2 || foundLows < 2); i++)
    {
-      // Check for Swing High pivot at index 'i'
-      if(iHigh(_Symbol, _Period, i) > iHigh(_Symbol, _Period, i-1) && 
-         iHigh(_Symbol, _Period, i) > iHigh(_Symbol, _Period, i+1))
+      // --- Swing High check (mirrors IsSwingHigh) ---
+      // Left side: 3 consecutive bearish closes leading into pivot
+      bool shLeft = iClose(_Symbol, _Period, i + 1) < iClose(_Symbol, _Period, i + 2) &&
+                    iClose(_Symbol, _Period, i + 2) < iClose(_Symbol, _Period, i + 3) &&
+                    iClose(_Symbol, _Period, i + 3) < iClose(_Symbol, _Period, i + 4);
+
+      // Right side: pivot high is higher than the candle to its right
+      bool shRight = iHigh(_Symbol, _Period, i) > iHigh(_Symbol, _Period, i + 1);
+
+      if(shLeft && shRight)
       {
-         if(foundHighs == 0) { h1 = iHigh(_Symbol, _Period, i); foundHighs++; }
-         else if(foundHighs == 1 && iHigh(_Symbol, _Period, i) != h1) { h2 = iHigh(_Symbol, _Period, i); foundHighs++; }
+         double pivotHigh = iHigh(_Symbol, _Period, i);
+         if(foundHighs == 0)
+         {
+            h1 = pivotHigh;
+            foundHighs++;
+            Print("Seed: First swing high found: ", h1, " at bar ", i, " (", TimeToString(iTime(_Symbol, _Period, i)), ")");
+         }
+         else if(foundHighs == 1 && pivotHigh != h1)
+         {
+            h2 = pivotHigh;
+            foundHighs++;
+            Print("Seed: Second swing high found: ", h2, " at bar ", i, " (", TimeToString(iTime(_Symbol, _Period, i)), ")");
+         }
       }
 
-      // Check for Swing Low pivot at index 'i'
-      if(iLow(_Symbol, _Period, i) < iLow(_Symbol, _Period, i-1) && 
-         iLow(_Symbol, _Period, i) < iLow(_Symbol, _Period, i+1))
+      // --- Swing Low check (mirrors IsSwingLow) ---
+      // Left side: 3 consecutive bullish closes leading into pivot
+      bool slLeft = iClose(_Symbol, _Period, i + 1) > iClose(_Symbol, _Period, i + 2) &&
+                    iClose(_Symbol, _Period, i + 2) > iClose(_Symbol, _Period, i + 3) &&
+                    iClose(_Symbol, _Period, i + 3) > iClose(_Symbol, _Period, i + 4);
+
+      // Right side: pivot low is lower than the candle to its right
+      bool slRight = iLow(_Symbol, _Period, i) < iLow(_Symbol, _Period, i + 1);
+
+      if(slLeft && slRight)
       {
-         if(foundLows == 0) { l1 = iLow(_Symbol, _Period, i); foundLows++; }
-         else if(foundLows == 1 && iLow(_Symbol, _Period, i) != l1) { l2 = iLow(_Symbol, _Period, i); foundLows++; }
+         double pivotLow = iLow(_Symbol, _Period, i);
+         if(foundLows == 0)
+         {
+            l1 = pivotLow;
+            foundLows++;
+            Print("Seed: First swing low found: ", l1, " at bar ", i, " (", TimeToString(iTime(_Symbol, _Period, i)), ")");
+         }
+         else if(foundLows == 1 && pivotLow != l1)
+         {
+            l2 = pivotLow;
+            foundLows++;
+            Print("Seed: Second swing low found: ", l2, " at bar ", i, " (", TimeToString(iTime(_Symbol, _Period, i)), ")");
+         }
       }
    }
 
-   // Assign to globals (h1/l1 are the most recent, h2/l2 are the previous)
+   // Assign to globals (h1/l1 are most recent, h2/l2 are previous)
    lastSwingHigh = h1;
    prevSwingHigh = h2;
    lastSwingLow  = l1;
    prevSwingLow  = l2;
 
-// Draw the lines for visual confirmation
-   DrawStructureLine("HH_H1_Current", h1, clrSkyBlue);
+   // Draw lines for visual confirmation
+   DrawStructureLine("HH_H1_Current",  h1, clrSkyBlue);
    DrawStructureLine("HH_H2_Previous", h2, clrRoyalBlue);
-   DrawStructureLine("LL_L1_Current", l1, clrPink);
+   DrawStructureLine("LL_L1_Current",  l1, clrPink);
    DrawStructureLine("LL_L2_Previous", l2, clrCrimson);
 
-   // Apply v9 HH/HL logic immediately
-   if(lastSwingHigh > prevSwingHigh && lastSwingLow > prevSwingLow){
-
+   // Set initial trend
+   if(lastSwingHigh > prevSwingHigh && lastSwingLow > prevSwingLow)
       currentTrend = TREND_UP;
-   Print("TREND : ", currentTrend, TrendLabel());
-   }
    else if(lastSwingLow < prevSwingLow && lastSwingHigh < prevSwingHigh)
-{      currentTrend = TREND_DOWN;
-
-   Print("TREND : ", currentTrend, TrendLabel());
-}
+      currentTrend = TREND_DOWN;
    else
       currentTrend = TREND_RANGING;
 
-   Print("Initial Trend Set: ", TrendLabel(), " (H1:", h1, " H2:", h2, " L1:", l1, " L2:", l2, ")");
+   Print("Initial Trend Set: ", TrendLabel(),
+         " (H1:", h1, " H2:", h2, " L1:", l1, " L2:", l2, ")");
 }
-
 
 
 //+------------------------------------------------------------------+
@@ -784,45 +821,154 @@ void DebugInfo()
       default:         trendLine = "↔ RANGING";   break;
    }
 
-   // Construct the same string, but using \n for new lines
-   string output =
-      "=== MARKET STRUCTURE v9.05 ===\n" +
-      "Time : " + TimeToString(TimeCurrent(), TIME_SECONDS) + "\n" +
-      "Trend : " + trendLine + "\n" +
-      "Filter Active : " + (TrendFilterEnabled ? "YES" : "NO") + "\n" +
-      "Prev Swing High : " + DoubleToString(prevSwingHigh, _Digits) + "\n" +
-      "Last Swing High : " + DoubleToString(lastSwingHigh, _Digits) + "\n" +
-      "Prev Swing Low : " + DoubleToString(prevSwingLow,  _Digits) + "\n" +
-      "Last Swing Low : " + DoubleToString(lastSwingLow,  _Digits) + "\n" +
-      "------------------------------\n" +
-      "BULLISH (Demand)\n" +
-      " Pullback Active : " + (isPullbackActive  ? "YES" : "NO") + "\n" +
-      " Zone Locked : " + (bullishZoneLocked ? "YES" : "NO") + "\n" +
-      " Bars Since OB : " + IntegerToString(barsSinceBearOB) + "\n" +
-      " OB Low : " + DoubleToString(tempBearishOB.low,  _Digits) + "\n" +
-      " Active Zones : " + IntegerToString(ArraySize(confirmedBullishZones)) + "\n" +
-      "------------------------------\n" +
-      "BEARISH (Supply)\n" +
-      " Rally Active : " + (isRallyActive ? "YES" : "NO") + "\n" +
-      " Zone Locked : " + (bearishZoneLocked ? "YES" : "NO") + "\n" +
-      " Bars Since OB : " + IntegerToString(barsSinceBullOB) + "\n" +
-      " OB High : " + DoubleToString(tempBullishOB.high, _Digits) + "\n" +
-      " Active Zones : " + IntegerToString(ArraySize(confirmedBearishZones));
+   // --- Resolve swing high/low bar indices ---
+// int prevSwingHighIdx = (prevSwingHighTime > 0) ? iBarShift(_Symbol, _Period, prevSwingHighTime) : -1;
+// int lastSwingHighIdx = (lastSwingHighTime > 0) ? iBarShift(_Symbol, _Period, lastSwingHighTime) : -1;
+// int prevSwingLowIdx  = (prevSwingLowTime  > 0) ? iBarShift(_Symbol, _Period, prevSwingLowTime)  : -1;
+// int lastSwingLowIdx  = (lastSwingLowTime  > 0) ? iBarShift(_Symbol, _Period, lastSwingLowTime)  : -1;
 
-   // --- Create or Update the Screen Label ---
-   string objName = "DebugLabel";
-   
-   if(ObjectFind(0, objName) < 0)
+   string output =
+      "=== MARKET STRUCTURE v9.05 ===\n"                                          +
+      "Time             : " + TimeToString(TimeCurrent(), TIME_SECONDS)           + "\n" +
+      "Trend            : " + trendLine                                           + "\n" +
+      "Filter Active    : " + (TrendFilterEnabled ? "YES" : "NO")                + "\n" +
+      "Prev Swing High  : " + DoubleToString(prevSwingHigh, _Digits)  + "\n" +
+      "Last Swing High  : " + DoubleToString(lastSwingHigh, _Digits) + "\n" +
+      "Prev Swing Low   : " + DoubleToString(prevSwingLow,  _Digits) +"\n" +
+      "Last Swing Low   : " + DoubleToString(lastSwingLow,  _Digits) + "\n" +
+      "---\n"                                                                      +
+      "BULLISH (Demand)\n"                                                         +
+      " Pullback Active : " + (isPullbackActive  ? "YES" : "NO")                 + "\n" +
+      " Zone Locked     : " + (bullishZoneLocked ? "YES" : "NO")                 + "\n" +
+      " Bars Since OB   : " + IntegerToString(barsSinceBearOB)                   + "\n" +
+      " OB Low          : " + DoubleToString(tempBearishOB.low,  _Digits)        + "\n" +
+      " Active Zones    : " + IntegerToString(ArraySize(confirmedBullishZones))  + "\n" +
+      "---\n"                                                                      +
+      "BEARISH (Supply)\n"                                                         +
+      " Rally Active    : " + (isRallyActive     ? "YES" : "NO")                 + "\n" +
+      " Zone Locked     : " + (bearishZoneLocked ? "YES" : "NO")                 + "\n" +
+      " Bars Since OB   : " + IntegerToString(barsSinceBullOB)                   + "\n" +
+      " OB High         : " + DoubleToString(tempBullishOB.high, _Digits)        + "\n" +
+      " Active Zones    : " + IntegerToString(ArraySize(confirmedBearishZones));
+
+   Comment(output);
+}
+enum order_type
+{
+   BUY = 0,
+   SELL = 1,
+   BUY_LIMIT = 2,
+   SELL_LIMIT = 3,
+   BUY_STOP = 4,
+   SELL_STOP = 5
+};
+
+ulong PlaceOrder(string symbol, double volume, double price, double sl, double tp,  order_type type)
+{
+  
+   MqlTradeResult result;
+   MqlTradeRequest request;
+
+   request.symbol   = symbol;
+   request.volume   = volume;
+   request.price    = price;
+   request.sl       = sl;
+   request.tp       = tp;
+   request.deviation = 10; // Max slippage in points
+   request.magic    = MAGIC_EAID; // Unique identifier for the EA
+   request.type_filling = ORDER_FILLING_FOK;                  //the filling policy fill or kill
+
+switch(type)
    {
-      ObjectCreate(0, objName, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, objName, OBJPROP_CORNER, CORNER_RIGHT_UPPER); // Top Right
-      ObjectSetInteger(0, objName, OBJPROP_ANCHOR, ANCHOR_RIGHT_UPPER); // Anchor point
-      ObjectSetInteger(0, objName, OBJPROP_XDISTANCE, 20);            // 20 pixels from right
-      ObjectSetInteger(0, objName, OBJPROP_YDISTANCE, 20);            // 20 pixels from top
-      ObjectSetString(0, objName, OBJPROP_FONT, "Courier New");       // Monospaced font for alignment
-      ObjectSetInteger(0, objName, OBJPROP_FONTSIZE, 10);
-      ObjectSetInteger(0, objName, OBJPROP_COLOR, clrWhite);
+      case BUY:
+         request.type = ORDER_TYPE_BUY;
+         request.action = TRADE_ACTION_DEAL;
+         break;
+      case SELL:
+         request.type = ORDER_TYPE_SELL;
+         request.action = TRADE_ACTION_DEAL;
+         break;
+      case BUY_LIMIT:
+         request.type = ORDER_TYPE_BUY_LIMIT;
+         request.action = TRADE_ACTION_PENDING;
+         break;
+      case SELL_LIMIT:
+         request.type = ORDER_TYPE_SELL_LIMIT;
+         request.action = TRADE_ACTION_PENDING;
+         break;
+      case BUY_STOP:
+         request.type = ORDER_TYPE_BUY_STOP;
+         request.action = TRADE_ACTION_PENDING;
+         break;
+      case SELL_STOP:
+         request.type = ORDER_TYPE_SELL_STOP;
+         request.action = TRADE_ACTION_PENDING;
+         break;
+      default:
+         Print("Invalid order type specified");
+      }
+
+   Print("Placing order: Symbol=", symbol, " Volume=", volume, " Price=", price, " SL=", sl, " TP=", tp);
+   if(!OrderSend(request, result))
+   {
+      Print("OrderSend failed: ", GetLastError());
+   }else
+   {
+      Print("Order placed successfully. Ticket: ", result.order);
+      return result.order;
+
    }
 
-   ObjectSetString(0, objName, OBJPROP_TEXT, output);
+   return 0; // Return 0 on failure
+   
 }
+
+//when calling an order  ulong request = PlaceOrder(_Symbol, 0.1, Ask, 0, 0, BUY);
+//return order ticket or 0 if failed 
+// check if 0 when calling to confirm order was placed successfully before using the ticket for modification or closing
+
+void ClosePosition(ulong ticket)
+{
+   MqlTradeResult result;
+   MqlTradeRequest request;
+
+   request.action = TRADE_ACTION_DEAL;
+   request.position = ticket;
+   request.deviation = 10; // Max slippage in points
+   request.magic    = MAGIC_EAID; // Unique identifier for the EA
+
+   Print("Closing position with ticket: ", ticket);
+   if(!OrderSend(request, result))
+   {
+      Print("OrderClose failed: ", GetLastError());
+   }else
+   {
+      Print("Position closed successfully. Ticket: ", result.order);
+   }
+}
+
+void ModifyPosition(ulong ticket, double newSL, double newTP)
+{
+   MqlTradeResult result;
+   MqlTradeRequest request;
+
+   request.action = TRADE_ACTION_SLTP;
+   request.position = ticket;
+   request.sl = newSL;
+   request.tp = newTP;
+   request.deviation = 10; // Max slippage in points
+   request.magic    = MAGIC_EAID; // Unique identifier for the EA
+
+   Print("Modifying position with ticket: ", ticket, " New SL: ", newSL, " New TP: ", newTP);
+   if(!OrderSend(request, result))
+   {
+      Print("OrderModify failed: ", GetLastError());
+   }else
+   {
+      Print("Position modified successfully. Ticket: ", result.order);
+   }
+}
+//+------------------------------------------------------------------+
+
+//TODO
+//  -- redo the SwingHigh and SwingLow functions they are very buggy and not detecting swings properly, also add a check to prevent them from updating the swing levels if the new swing is not actually higher/lower than the last confirmed swing (prevents false HH/LH on small retracements)
